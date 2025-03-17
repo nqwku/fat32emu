@@ -195,6 +195,8 @@ bool fat32_init(FAT32_FileSystem *fs, const char *filename) {
     if (!fs || !filename) {
         return false;
     }
+//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    fs->fat = NULL;
 
     if (!disk_init(&fs->disk, filename)) {
         return false;
@@ -290,7 +292,7 @@ bool fat32_read_fat(FAT32_FileSystem *fs) {
 }
 
 bool fat32_write_fat(FAT32_FileSystem *fs) {
-    if (!fs || !fs->is_formatted) {
+    if (!fs || !fs->fat ) {
         return false;
     }
 
@@ -308,6 +310,7 @@ bool fat32_write_fat(FAT32_FileSystem *fs) {
     }
     return success;
 }
+
 
 uint32_t fat32_get_next_cluster(FAT32_FileSystem *fs, uint32_t cluster) {
     if (!fs || !fs->fat || !fs->is_formatted || cluster < 2 || cluster >= fs->data_cluster_count + 2) {
@@ -345,11 +348,11 @@ bool fat32_set_cluster_value(FAT32_FileSystem *fs, uint32_t cluster, uint32_t va
 }
 
 uint32_t fat32_sector_for_cluster(FAT32_FileSystem *fs, uint32_t cluster) {
-    if (!fs || !fs->is_formatted || cluster < 2 ) {
+    if (!fs || cluster < 2 ) {
         return 0;
     }
 
-    return fs->first_data_sector + (cluster + 2) * fs->sectors_per_cluster;
+    return fs->first_data_sector + (cluster - 2) * fs->sectors_per_cluster;
 }
 
 bool fat32_read_cluster(FAT32_FileSystem *fs, uint32_t cluster, void *buffer) {
@@ -362,7 +365,7 @@ bool fat32_read_cluster(FAT32_FileSystem *fs, uint32_t cluster, void *buffer) {
 }
 
 bool fat32_write_cluster(FAT32_FileSystem *fs, uint32_t cluster, const void *buffer) {
-    if (!fs || !buffer || !fs->is_formatted || cluster < 2) {
+    if (!fs || !buffer || cluster < 2) {
         return false;
     }
 
@@ -396,6 +399,8 @@ bool fat32_format(FAT32_FileSystem *fs) {
     fs->bootSector.BPB_HiddSec = 0;
 
     uint32_t total_sectors = disk_get_total_sectors(&fs->disk);
+    printf("Debug: Total sectors: %u\n", total_sectors);
+
     fs->bootSector.BPB_TotSec32 = total_sectors;
 
     uint32_t data_sectors = total_sectors - fs->bootSector.BPB_RsvdSecCnt;
@@ -406,6 +411,9 @@ bool fat32_format(FAT32_FileSystem *fs) {
     data_sectors = total_sectors - fs->bootSector.BPB_RsvdSecCnt - (fat_size * fs->bootSector.BPB_NumFATs);
     clusters = data_sectors / fs->bootSector.BPB_SecPerClus;
     fat_size = ((clusters * 4) + 512 - 1) / 512;
+
+    printf("Debug: FAT size: %u sectors\n", fat_size);
+    printf("Debug: Clusters: %u\n", clusters);
 
     fs->bootSector.BPB_FATSz32 = fat_size;
     fs->bootSector.BPB_ExtFlags = 0;
@@ -425,9 +433,12 @@ bool fat32_format(FAT32_FileSystem *fs) {
     memset(fs->bootSector.BootCode, 0, 420);
     fs->bootSector.BootSignature = FAT32_SIGNATURE;
 
+    printf("Debug: Writing boot sector...\n");
     if (!fat32_write_boot_sector(fs)) {
+        printf("Debug: Failed to write boot sector\n");
         return false;
     }
+    printf("Debug: Boot sector written successfully\n");
 
     fs->sectors_per_cluster = fs->bootSector.BPB_SecPerClus;
     fs->fat_size = fs->bootSector.BPB_FATSz32;
@@ -438,33 +449,49 @@ bool fat32_format(FAT32_FileSystem *fs) {
     uint32_t data_sector_count = total_sectors - fs->first_data_sector;
     fs->data_cluster_count = data_sector_count / fs->sectors_per_cluster;
 
-    if (fs->fat) {
+    printf("Debug: First data sector: %u\n", fs->first_data_sector);
+    printf("Debug: Data clusters: %u\n", fs->data_cluster_count);
+
+    printf("Debug: Freeing FAT if exists...\n");
+    if (fs->fat != NULL) {
         free(fs->fat);
+        fs->fat = NULL;
     }
 
     uint32_t fat_size_bytes = fs->fat_size * fs->bootSector.BPB_BytesPerSec;
+    printf("Debug: Allocating FAT: %u bytes\n", fat_size_bytes);
+
     fs->fat = (uint32_t*)calloc(1, fat_size_bytes);
     if (!fs->fat) {
+        printf("Debug: Failed to allocate memory for FAT\n");
         return false;
     }
+    printf("Debug: FAT allocated successfully\n");
 
     fs->fat[0] = 0x0FFFFF00 | fs->bootSector.BPB_Media;
     fs->fat[1] = 0x0FFFFFFF;
 
     fs->fat[FAT32_ROOTDIR_CLUSTER] = FAT32_CLUSTER_END;
 
+    printf("Debug: Writing FAT to sectors %u-%u\n", fs->bootSector.BPB_RsvdSecCnt,
+           fs->bootSector.BPB_RsvdSecCnt + fs->fat_size - 1);
     if (!fat32_write_fat(fs)) {
+        printf("Debug: Failed to write FAT\n");
         free(fs->fat);
         fs->fat = NULL;
         return false;
     }
+    printf("Debug: FAT written successfully\n");
 
+    printf("Debug: Allocating root directory...\n");
     uint8_t *root_dir = (uint8_t*)calloc(1, fs->bytes_per_cluster);
     if (!root_dir) {
+        printf("Debug: Failed to allocate memory for root directory\n");
         free(fs->fat);
         fs->fat = NULL;
         return false;
     }
+    printf("Debug: Root directory allocated successfully\n");
 
     FAT32_DirEntry *dir_entries = (FAT32_DirEntry*)root_dir;
 
@@ -493,12 +520,16 @@ bool fat32_format(FAT32_FileSystem *fs) {
     dir_entries[1].DIR_FstClusLO = FAT32_ROOTDIR_CLUSTER & 0xFFFF;
     dir_entries[1].DIR_FileSize = 0;
 
+    printf("Debug: Writing root directory to cluster %u (sector %u)\n",
+           FAT32_ROOTDIR_CLUSTER, fat32_sector_for_cluster(fs, FAT32_ROOTDIR_CLUSTER));
     if (!fat32_write_cluster(fs, FAT32_ROOTDIR_CLUSTER, root_dir)){
+        printf("Debug: Failed to write root directory\n");
         free(root_dir);
         free(fs->fat);
         fs->fat = NULL;
         return false;
     }
+    printf("Debug: Root directory written successfully\n");
 
     free(root_dir);
 
@@ -506,6 +537,7 @@ bool fat32_format(FAT32_FileSystem *fs) {
     strcpy(fs->current_path, "/");
     fs->is_formatted = true;
 
+    printf("Debug: Formatting completed successfully\n");
     return true;
 }
 
@@ -518,7 +550,7 @@ bool fat32_change_directory(FAT32_FileSystem *fs, const char *path) {
         return false;
     }
 
-    if (strcmp(path[0], "/") == 0) {
+    if (strcmp(path, "/") == 0) {
         fs->current_dir_cluster = fs->bootSector.BPB_RootClus;
         strcpy(fs->current_path, "/");
         return true;

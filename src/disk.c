@@ -105,7 +105,7 @@ bool disk_read_sectors(Disk *disk, uint32_t start_sector, uint32_t sector_count,
     return read_count == sector_count;
 }
 
-bool disk_write_sectors(Disk *disk, uint32_t start_sector, uint32_t sector_count, void *buffer) {
+bool disk_write_sectors(Disk *disk, uint32_t start_sector, uint32_t sector_count, const void *buffer) {
     if (!disk || !disk->file || !buffer
         || start_sector >= disk->total_sectors
         || start_sector + sector_count > disk->total_sectors) {

@@ -14,6 +14,10 @@ set(SOURCES
         src/disk.c
         src/commands.c
         src/utils.c
+        include/commands.h
+        include/disk.h
+        include/fat32.h
+        include/utils.h
 )
 
 add_executable(f32disk ${SOURCES})

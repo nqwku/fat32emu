@@ -1,4 +1,5 @@
 #include "../include/fat32.h"
+#include "../include/utils.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -24,31 +25,6 @@ static uint16_t get_fat_time() {
     uint16_t second = tm->tm_sec / 2;
 
     return (hour << 11) | (minute << 5) | second;
-}
-
-static void convert_to_short_name(char *short_name, const char *name) {
-    memset(short_name, ' ', 11);
-
-    int i = 0, j = 0;
-
-    while (name[i] && name[i] != '.' && j < 8) {
-        char c = name[i++];
-        short_name[j++] = c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
-    }
-
-    while (name[i] && name[i] != '.') {
-        i++;
-    }
-
-    if (name[i] == '.') {
-        i++;
-        j = 8;
-
-        while (name[i] && j < 11) {
-            char c = name[i++];
-            short_name[j++] = c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
-        }
-    }
 }
 
 static int find_entry_by_name(FAT32_FileSystem *fs,
@@ -190,12 +166,12 @@ static bool parse_path(const char *path, char components[][13], int *component_c
 
     return true;
 }
-
+#if 0
 bool fat32_init(FAT32_FileSystem *fs, const char *filename) {
     if (!fs || !filename) {
         return false;
     }
-//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
     fs->fat = NULL;
 
     if (!disk_init(&fs->disk, filename)) {
@@ -204,34 +180,88 @@ bool fat32_init(FAT32_FileSystem *fs, const char *filename) {
 
     strcpy(fs->current_path, "/");
 
+    fseek(fs->disk.file, 0, SEEK_END);
+    long file_size = ftell(fs->disk.file);
+    fseek(fs->disk.file, 0, SEEK_SET);
+
+    if (file_size > 1024 * 1024) {
+        printf("Debug: File exists with size %ld bytes, assuming formatted\n", file_size);
+        fs->is_formatted = true;
+    } else {
+        printf("Debug: Small or empty file, not formatted\n");
+        fs->is_formatted = false;
+    }
+
+    if (fat32_read_boot_sector(fs)) {
+        fs->sectors_per_cluster = fs->bootSector.BPB_SecPerClus;
+        fs->fat_size = fs->bootSector.BPB_FATSz32;
+        fs->bytes_per_cluster = fs->bootSector.BPB_BytesPerSec * fs->sectors_per_cluster;
+        fs->first_data_sector = fs->bootSector.BPB_RsvdSecCnt +
+                                (fs->bootSector.BPB_NumFATs * fs->fat_size);
+        uint32_t total_sectors = fs->bootSector.BPB_TotSec32;
+        uint32_t data_sectors = total_sectors - fs->first_data_sector;
+        fs->data_cluster_count = data_sectors / fs->sectors_per_cluster;
+        fs->current_dir_cluster = fs->bootSector.BPB_RootClus;
+
+        if (fs->is_formatted) {
+            fat32_read_fat(fs);
+        }
+    }
+
+    return true;
+}
+#endif
+bool fat32_init(FAT32_FileSystem *fs, const char *filename) {
+    if (!fs || !filename) {
+        return false;
+    }
+
+    fs->fat = NULL;
+    fs->is_formatted = false;
+
+    if (!disk_init(&fs->disk, filename)) {
+        return false;
+    }
+
+    strcpy(fs->current_path, "/");
+
+    fseek(fs->disk.file, 0, SEEK_END);
+    long file_size = ftell(fs->disk.file);
+    fseek(fs->disk.file, 0, SEEK_SET);
+
+    if (file_size < 1024) {
+        printf("Debug: File is too small, not formatted\n");
+        return true;
+    }
+
     if (!fat32_read_boot_sector(fs)) {
-        fs->is_formatted = false;
+        printf("Debug: Failed to read boot sector\n");
         return true;
     }
 
-    if (!fat32_check_fs(fs)) {
+    if (fs->bootSector.BootSignature == FAT32_SIGNATURE &&
+        fs->bootSector.BPB_SecPerClus != 0 &&
+        strncmp(fs->bootSector.BS_FilSysType, "FAT32   ", 8) == 0) {
+
+        fs->is_formatted = true;
+        printf("Debug: Valid FAT32 filesystem detected\n");
+
+        fs->sectors_per_cluster = fs->bootSector.BPB_SecPerClus;
+        fs->fat_size = fs->bootSector.BPB_FATSz32;
+        fs->bytes_per_cluster = fs->bootSector.BPB_BytesPerSec * fs->sectors_per_cluster;
+        fs->first_data_sector = fs->bootSector.BPB_RsvdSecCnt +
+                                (fs->bootSector.BPB_NumFATs * fs->fat_size);
+
+        uint32_t total_sectors = fs->bootSector.BPB_TotSec32;
+        uint32_t data_sectors = total_sectors - fs->first_data_sector;
+        fs->data_cluster_count = data_sectors / fs->sectors_per_cluster;
+        fs->current_dir_cluster = fs->bootSector.BPB_RootClus;
+
+        fat32_read_fat(fs);
+    } else {
+        printf("Debug: File exists but is not a valid FAT32 filesystem\n");
         fs->is_formatted = false;
-        return true;
     }
-
-    fs->sectors_per_cluster = fs->bootSector.BPB_SecPerClus;
-    fs->fat_size = fs->bootSector.BPB_FATSz32;
-    fs->bytes_per_cluster = fs->bootSector.BPB_BytesPerSec * fs->sectors_per_cluster;
-
-    fs->first_data_sector = fs->bootSector.BPB_RsvdSecCnt +
-                            (fs->bootSector.BPB_NumFATs * fs->fat_size);
-
-    uint32_t total_sectors = fs->bootSector.BPB_TotSec32;
-    uint32_t data_sectors = total_sectors - fs->first_data_sector;
-    fs->data_cluster_count = data_sectors / fs->sectors_per_cluster;
-
-    if (!fat32_read_fat(fs)) {
-        fs->is_formatted = false;
-        return true;
-    }
-
-    fs->current_dir_cluster = fs->bootSector.BPB_RootClus;
-    fs->is_formatted = true;
 
     return true;
 }
@@ -254,14 +284,21 @@ bool fat32_write_boot_sector(FAT32_FileSystem *fs) {
 
 bool fat32_check_fs(FAT32_FileSystem *fs) {
     if (!fs) {
+        printf("Debug: fs is NULL\n");
         return false;
     }
 
-    if (fs->bootSector.BootSignature != FAT32_SIGNATURE) {
+    printf("Debug: Boot signature value: 0x%04X, expected: 0x%04X\n",
+       fs->bootSector.BootSignature, FAT32_SIGNATURE);
+
+    if (fs->bootSector.BootSignature == 0) {
+        printf("Debug: Boot signature is 0\n");
         return false;
     }
 
     if (strncmp(fs->bootSector.BS_FilSysType, "FAT32   ", 8) != 0) {
+        printf("Debug: Invalid file system type: %.8s (expected FAT32   )\n",
+               fs->bootSector.BS_FilSysType);
         return false;
     }
 
@@ -269,8 +306,11 @@ bool fat32_check_fs(FAT32_FileSystem *fs) {
         fs->bootSector.BPB_SecPerClus == 0 ||
         fs->bootSector.BPB_NumFATs == 0 ||
         fs->bootSector.BPB_FATSz32 == 0) {
+        printf("Debug: Invalid BPB parameters: BytesPerSec=%d, SecPerClus=%d, NumFATs=%d, FATSz32=%d\n",
+               fs->bootSector.BPB_BytesPerSec, fs->bootSector.BPB_SecPerClus,
+               fs->bootSector.BPB_NumFATs, fs->bootSector.BPB_FATSz32);
         return false;
-    }
+        }
 
     return true;
 }
@@ -765,6 +805,10 @@ bool fat32_create_file(FAT32_FileSystem *fs, const char *name) {
 void fat32_close(FAT32_FileSystem *fs) {
     if (!fs) {
         return;
+    }
+
+    if (fs->disk.file) {
+        fflush(fs->disk.file);
     }
 
     if (fs->fat) {

@@ -13,29 +13,48 @@ void path_normalize(char *path){
         }
     }
 
-    char *src = path;
-    char *dst = path;
+    char result[256];
+    char *result_ptr = result;
+    char *token;
+    char *saveptr;
+    char path_copy[256];
 
-    bool prev_slash = false;
+    strcpy(path_copy, path);
 
-    while (*src) {
-        if (*src == '/') {
-            if (!prev_slash) {
-                *dst++ = *src;
-                prev_slash = true;
+    if (path[0] == '/') {
+        *result_ptr++ = '/';
+    }
+
+    token = strtok_r(path_copy, "/", &saveptr);
+    while (token) {
+        if (strcmp(token, ".") == 0) {
+        } else if (strcmp(token, "..") == 0) {
+            if (result_ptr > result + 1) {
+                result_ptr--;
+                while (result_ptr > result && *result_ptr != '/') {
+                    result_ptr--;
+                }
+                if (*result_ptr == '/' && result_ptr != result) {
+                    result_ptr++;
+                }
             }
         } else {
-            *dst++ = *src;
-            prev_slash = false;
+            if (*(result_ptr-1) != '/') {
+                *result_ptr++ = '/';
+            }
+            strcpy(result_ptr, token);
+            result_ptr += strlen(token);
         }
-        src++;
-    }
-    *dst = '\0';
 
-    size_t len = strlen(path);
-    if (len > 1 && path[len - 1] == '/') {
-        path[len - 1] = '\0';
+        token = strtok_r(NULL, "/", &saveptr);
     }
+
+    if (result_ptr > result + 1 && *(result_ptr-1) == '/') {
+        result_ptr--;
+    }
+
+    *result_ptr = '\0';
+    strcpy(path, result);
 }
 
 void path_combine(char *dest, const char *base, const char *relative) {
@@ -48,23 +67,26 @@ void path_combine(char *dest, const char *base, const char *relative) {
         return;
     }
 
-    if (path_is_absolute(relative)) {
+    if (relative[0] == '/') {
         strcpy(dest, relative);
         return;
     }
 
     strcpy(dest, base);
-    size_t len = strlen(dest);
+    size_t base_len = strlen(dest);
 
-    if (len > 0 && dest[len - 1] == '/') {
-        dest[len] = '/';
-        dest[len + 1] = '\0';
+    if (base_len > 0 && dest[base_len - 1] != '/') {
+        dest[base_len] = '/';
+        dest[base_len + 1] = '\0';
+        base_len++;
     }
 
     strcat(dest, relative);
 
     path_normalize(dest);
 }
+
+
 
 bool path_is_absolute(const char *path) {
     return path && path[0] == '/';
@@ -143,30 +165,38 @@ bool is_valid_filename(const char *name) {
     return true;
 }
 
-void convert_to_short_name(char *dest, const char *src) {
-    if (!dest || !src) {
-        return;
+
+void convert_to_short_name(char *short_name, const char *name) {
+    for (int i = 0; i < 11; i++) {
+        short_name[i] = ' ';
     }
 
-    memset(dest, ' ', 1);
-     int i = 0, j = 0;
-
-    while (src[i] && src[i] != '.' && j < 8) {
-        char c = src[i++];
-        dest[j++] = c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
-    }
-
-    while (src[i] && src[i] != '.') {
+    int i = 0;
+    while (i < 8 && name[i] && name[i] != '.') {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') {
+            c = c - 'a' + 'A';
+        }
+        short_name[i] = c;
         i++;
     }
 
-    if (src[i] == '.') {
-        i++;
-        j = 0;
+    const char *ext = NULL;
+    const char *p = name;
+    while (*p) {
+        if (*p == '.') {
+            ext = p + 1;
+        }
+        p++;
+    }
 
-        while (src[i] && j < 11) {
-            char c = src[i++];
-            dest[j++] = c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c;
+    if (ext) {
+        for (i = 0; i < 3 && ext[i]; i++) {
+            char c = ext[i];
+            if (c >= 'a' && c <= 'z') {
+                c = c - 'a' + 'A';
+            }
+            short_name[8 + i] = c;
         }
     }
 }

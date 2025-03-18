@@ -6,6 +6,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+
 const char* get_temp_filename() {
     static char filename[64];
     sprintf(filename, "test_fat32_%d.bin", rand());
